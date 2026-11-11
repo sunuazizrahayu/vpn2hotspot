@@ -402,7 +402,6 @@ start_service() {
     local pid i
     if pid=$(is_running); then
         write_state on
-        update_description on
         echo "already running (pid $pid)"
         return 0
     fi
@@ -422,7 +421,6 @@ start_service() {
     while [ "$i" -lt 12 ]; do
         if pid=$(is_running); then
             if healthy; then
-                update_description on
                 echo "started (pid $pid)"
                 return 0
             fi
@@ -432,7 +430,6 @@ start_service() {
     done
 
     if pid=$(is_running); then
-        update_description on
         echo "started (pid $pid)"
         return 0
     fi
