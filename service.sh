@@ -322,9 +322,11 @@ read_state() {
     tr -d ' \t\r\n' < "$STATE_FILE" 2>/dev/null
 }
 
-# Show the service state in the module description with a single symbol:
-#   ✓  service is running
-#   ✗  service is stopped
+# Show the service state in the module description with a single colored icon:
+#   ✔️  service is running (green check)
+#   ❌  service is stopped (red cross)
+# The U+FE0F variation selector is required, otherwise these symbols fall back
+# to the monochrome text glyphs.
 # module.prop is replaced atomically, so a reader (or a concurrent update) can
 # never see a partially written file and lose id/name/version/author.
 update_description() {
@@ -332,9 +334,9 @@ update_description() {
     [ -r "$MODULE_PROP" ] || return 0
 
     if [ "$mode" = "on" ]; then
-        desc="✓ $BASE_DESC"
+        desc="✔️ $BASE_DESC"
     else
-        desc="✗ $BASE_DESC"
+        desc="❌ $BASE_DESC"
     fi
 
     current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
