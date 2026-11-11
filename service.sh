@@ -38,6 +38,7 @@ esac
 # (KernelSU, Magisk, APatch, ...) shows whether the service is on or off.
 MODULE_PROP=${MODULE_PROP:-${SELF%/*}/module.prop}
 [ -f "$MODULE_PROP" ] || MODULE_PROP=/data/adb/modules/vpn-gateway/module.prop
+BASE_DESC="Allow all LAN traffic routing to VPN."
 
 FWD_CHAIN=VPNGW_FWD
 NAT_CHAIN=VPNGW_NAT
@@ -321,35 +322,22 @@ read_state() {
     tr -d ' \t\r\n' < "$STATE_FILE" 2>/dev/null
 }
 
-# Show the service state in the module description with a single icon:
-#   🔵  service is running
-#   🔴  service is stopped
+# Show the service state in the module description with a single symbol:
+#   ✓  service is running
+#   ✗  service is stopped
 # module.prop is replaced atomically, so a reader (or a concurrent update) can
 # never see a partially written file and lose id/name/version/author.
 update_description() {
-    local mode="$1" base current desc stripped tmp
+    local mode="$1" current desc tmp
     [ -r "$MODULE_PROP" ] || return 0
 
-    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
-    base=$(printf '%s\n' "$current" | sed 's/ | Status:.*$//')
-
-    # Drop every leading state icon. One icon is normal, but looping also
-    # repairs old descriptions that accumulated more than one.
-    while :; do
-        stripped=$(printf '%s\n' "$base" |
-            sed -e 's/^🔵 *//' -e 's/^🔴 *//' -e 's/^✅ *//' \
-                -e 's/^🟢 *//' -e 's/^● *//' -e 's/^○ *//')
-        [ "$stripped" = "$base" ] && break
-        base=$stripped
-    done
-    [ -n "$base" ] || base="Allow all LAN traffic routing to VPN."
-
     if [ "$mode" = "on" ]; then
-        desc="🔵 $base"
+        desc="✓ $BASE_DESC"
     else
-        desc="🔴 $base"
+        desc="✗ $BASE_DESC"
     fi
 
+    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
     [ "$current" = "$desc" ] && return 0
 
     tmp="${MODULE_PROP}.tmp.$$"
