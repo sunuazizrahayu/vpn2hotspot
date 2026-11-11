@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>VPN Gateway</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --card: #141a24;
+    --card-2: #1b2330;
+    --text: #e8edf5;
+    --muted: #8b97a8;
+    --line: rgba(255, 255, 255, 0.08);
+    --green: #33d17a;
+    --green-dim: rgba(51, 209, 122, 0.14);
+    --red: #ff5c5c;
+    --red-dim: rgba(255, 92, 92, 0.14);
+    --accent: #4f8cff;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    padding: calc(20px + env(safe-area-inset-top)) 16px calc(56px + env(safe-area-inset-bottom));
+    background:
+      radial-gradient(1200px 600px at 50% -10%, rgba(79, 140, 255, 0.16), transparent 60%),
+      radial-gradient(800px 400px at 100% 110%, rgba(51, 209, 122, 0.08), transparent 70%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  .wrap { width: 100%; max-width: 520px; margin: 0 auto; }
+  .wrap > * + * { margin-top: 16px; }
+
+  header { display: flex; align-items: center; padding: 4px 2px; }
+  header .title { margin-left: 12px; }
+
+  .logo {
+    width: 42px; height: 42px; flex: 0 0 42px;
+    border-radius: 13px;
+    display: grid; place-items: center;
+    background: linear-gradient(145deg, #2b6bff, #1b3fb8);
+    box-shadow: 0 8px 24px rgba(43, 107, 255, 0.35);
+  }
+  .logo svg { width: 22px; height: 22px; }
+
+  .title { display: flex; flex-direction: column; min-width: 0; }
+  .title h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: 0.2px; }
+  .title p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: 18px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  }
+
+  .hero { display: flex; flex-direction: column; align-items: center; }
+  .hero > * + * { margin-top: 16px; }
+
+  .status-pill {
+    display: inline-flex; align-items: center;
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 13px; font-weight: 600;
+    background: var(--red-dim);
+    color: var(--red);
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+  .status-pill.on { background: var(--green-dim); color: var(--green); }
+  .status-pill.pending { background: rgba(79, 140, 255, 0.14); color: var(--accent); }
+
+  .dot { width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.08); }
+  .status-pill.on .dot, .status-pill.pending .dot { animation: pulse 2s ease-in-out infinite; }
+  .status-pill.pending .dot { animation-duration: 1.1s; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .power {
+    width: 136px; height: 136px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 92, 92, 0.35);
+    background: radial-gradient(circle at 50% 35%, rgba(255, 92, 92, 0.18), rgba(255, 92, 92, 0.04) 65%), var(--card-2);
+    color: var(--red);
+    display: grid; place-items: center;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+    box-shadow: 0 0 0 10px rgba(255, 92, 92, 0.05);
+  }
+  .power:active { transform: scale(0.95); }
+  .power.on {
+    border-color: rgba(51, 209, 122, 0.4);
+    background: radial-gradient(circle at 50% 35%, rgba(51, 209, 122, 0.2), rgba(51, 209, 122, 0.04) 65%), var(--card-2);
+    color: var(--green);
+    box-shadow: 0 0 0 10px rgba(51, 209, 122, 0.06), 0 0 40px rgba(51, 209, 122, 0.18);
+  }
+  .power.busy { pointer-events: none; opacity: 0.65; }
+  .power svg { width: 52px; height: 52px; }
+
+  .power-label { font-size: 13px; color: var(--muted); }
+  .power-label strong { color: var(--text); font-weight: 600; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .item.wide { grid-column: 1 / -1; }
+
+  .item {
+    background: var(--card-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 11px 13px;
+    min-width: 0;
+  }
+  .item .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
+  .item .v { font-size: 13.5px; font-weight: 600; word-break: break-word; }
+  .item .v.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; font-weight: 500; }
+  .item .v.lines { white-space: pre-line; line-height: 1.5; }
+  .ok { color: var(--green); }
+  .bad { color: var(--red); }
+
+  .row { display: flex; }
+  .row > * + * { margin-left: 10px; }
+
+  .btn {
+    flex: 1;
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--card-2);
+    color: var(--text);
+    border-radius: 13px;
+    padding: 12px 14px;
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+  .btn:active { transform: scale(0.98); background: #222c3b; }
+  .btn.busy { pointer-events: none; opacity: 0.6; }
+  .power:disabled, .btn:disabled { cursor: default; }
+
+  details { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+  summary {
+    cursor: pointer; color: var(--muted); font-size: 12.5px; font-weight: 600;
+    list-style: none; display: flex; align-items: center; justify-content: space-between;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "▾"; transition: transform 0.15s ease; }
+  details[open] summary::after { transform: rotate(180deg); }
+
+  pre.log {
+    margin: 10px 0 0;
+    max-height: 190px;
+    overflow: auto;
+    background: #0d1118;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: #b7c2d2;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .hint { font-size: 11.5px; line-height: 1.6; color: var(--muted); text-align: center; padding: 0 8px; }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    transform: translate(-50%, 20px);
+    background: #232d3d;
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-size: 13px;
+    padding: 10px 16px;
+    border-radius: 999px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    max-width: calc(100vw - 48px);
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    z-index: 10;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <div class="title">
+        <h1>VPN Gateway</h1>
+        <p>Share a VPN connection with hotspot &amp; tethering clients</p>
+      </div>
+    </header>
+
+    <section class="card hero">
+      <span id="pill" class="status-pill">
+        <span class="dot"></span>
+        <span id="pillText">Checking...</span>
+      </span>
+
+      <button id="power" class="power" type="button" aria-label="Start or stop the service">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+          <line x1="12" y1="2" x2="12" y2="12"/>
+        </svg>
+      </button>
+
+      <div class="power-label"><span id="labelPrefix">Tap to </span><strong id="actionHint">start the service</strong></div>
+    </section>
+
+    <section class="card">
+      <div class="grid">
+        <div class="item">
+          <div class="k">VPN interface</div>
+          <div id="tun" class="v mono">-</div>
+        </div>
+        <div class="item">
+          <div class="k">Routing rules</div>
+          <div id="applied" class="v">-</div>
+        </div>
+        <div class="item">
+          <div class="k">PID</div>
+          <div id="pid" class="v mono">-</div>
+        </div>
+        <div class="item">
+          <div class="k">NAT</div>
+          <div id="nat" class="v">-</div>
+        </div>
+        <div class="item wide">
+          <div class="k">Client</div>
+          <div id="clients" class="v mono lines">-</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top: 12px;">
+        <button id="refresh" class="btn" type="button">Refresh status</button>
+      </div>
+
+      <details id="logBox">
+        <summary>Service log</summary>
+        <pre id="log" class="log">Loading...</pre>
+      </details>
+    </section>
+
+    <p class="hint">
+      The state is persistent. If you stop the service here, it will not start
+      automatically on boot either. Starting it again does not require a reboot.
+    </p>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var DEFAULT_DIR = "/data/adb/modules/vpn-gateway";
+  var LOG_FILE = "/data/adb/vpn-gateway.log";
+  var moduleDir = DEFAULT_DIR;
+  var toggling = false;
+  var refreshing = false;
+  var refreshSeq = 0;
+  var lastState = null;
+  var pollTimer = null;
+  var callbackSeq = 0;
+
+  var el = {
+    pill: document.getElementById("pill"),
+    pillText: document.getElementById("pillText"),
+    power: document.getElementById("power"),
+    actionHint: document.getElementById("actionHint"),
+    labelPrefix: document.getElementById("labelPrefix"),
+    tun: document.getElementById("tun"),
+    applied: document.getElementById("applied"),
+    pid: document.getElementById("pid"),
+    nat: document.getElementById("nat"),
+    clients: document.getElementById("clients"),
+    refresh: document.getElementById("refresh"),
+    log: document.getElementById("log"),
+    logBox: document.getElementById("logBox"),
+    toast: document.getElementById("toast")
+  };
+
+  function hasBridge() {
+    return typeof window.ksu !== "undefined" && typeof window.ksu.exec === "function";
+  }
+
+  function resolveModuleDir() {
+    if (!hasBridge() || typeof window.ksu.moduleInfo !== "function") return;
+    try {
+      var info = JSON.parse(window.ksu.moduleInfo());
+      if (info && typeof info.moduleDir === "string" && info.moduleDir) {
+        moduleDir = info.moduleDir;
+      }
+    } catch (e) { /* keep default */ }
+  }
+
+  function shQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  // ksu.exec() blocks the WebView JS thread until the command finishes, which
+  // freezes the UI. Use ksu.spawn() when available so the page keeps painting.
+  function execBlocking(cmd) {
+    return new Promise(function (resolve, reject) {
+      if (!hasBridge()) {
+        reject(new Error("KernelSU bridge unavailable"));
+        return;
+      }
+
+      var name = "__vpngw_cb_" + Date.now() + "_" + (callbackSeq++);
+      var settled = false;
+
+      window[name] = function (errno, stdout, stderr) {
+        if (settled) return;
+        settled = true;
+        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        resolve({
+          errno: typeof errno === "number" ? errno : 0,
+          stdout: stdout || "",
+          stderr: stderr || ""
+        });
+      };
+
+      try {
+        window.ksu.exec(cmd, JSON.stringify({}), name);
+      } catch (err) {
+        settled = true;
+        try { delete window[name]; } catch (e) {}
+        reject(err);
+      }
+    });
+  }
+
+  function spawnCommand(cmd) {
+    return new Promise(function (resolve, reject) {
+      var name = "__vpngw_sp_" + Date.now() + "_" + (callbackSeq++);
+      var out = [];
+      var err = [];
+      var settled = false;
+      var timer = null;
+
+      function cleanup() {
+        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        if (timer) clearTimeout(timer);
+      }
+
+      window[name] = {
+        stdout: {
+          emit: function (event, data) {
+            if (event === "data") out.push(String(data));
+          }
+        },
+        stderr: {
+          emit: function (event, data) {
+            if (event === "data") err.push(String(data));
+          }
+        },
+        emit: function (event, data) {
+          if (event === "error") {
+            if (data && data.message) err.push(String(data.message));
+            return;
+          }
+          if (event !== "exit" || settled) return;
+          settled = true;
+          cleanup();
+          resolve({
+            errno: typeof data === "number" ? data : 0,
+            stdout: out.join("\n"),
+            stderr: err.join("\n")
+          });
+        }
+      };
+
+      timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error("command timed out"));
+      }, 30000);
+
+      try {
+        window.ksu.spawn(cmd, "[]", JSON.stringify({}), name);
+      } catch (e) {
+        settled = true;
+        cleanup();
+        reject(e);
+      }
+    });
+  }
+
+  function exec(cmd) {
+    if (window.ksu && typeof window.ksu.spawn === "function") {
+      return spawnCommand(cmd);
+    }
+    return execBlocking(cmd);
+  }
+
+  function serviceCmd(action) {
+    return "sh " + shQuote(moduleDir + "/service.sh") + " " + action;
+  }
+
+  function parseStatus(text) {
+    var out = {};
+    String(text || "").split(/\r?\n/).forEach(function (line) {
+      var i = line.indexOf("=");
+      if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    });
+    return out;
+  }
+
+  function toast(message) {
+    el.toast.textContent = message;
+    el.toast.classList.add("show");
+    if (toast.timer) clearTimeout(toast.timer);
+    toast.timer = setTimeout(function () {
+      el.toast.classList.remove("show");
+    }, 2200);
+  }
+
+  function updateControls() {
+    el.power.classList.toggle("busy", toggling);
+    el.refresh.classList.toggle("busy", toggling || refreshing);
+    el.power.disabled = toggling;
+    el.refresh.disabled = toggling || refreshing;
+    el.power.setAttribute("aria-busy", toggling ? "true" : "false");
+  }
+
+  function setPending(target) {
+    el.pill.classList.remove("on");
+    el.pill.classList.add("pending");
+    el.pillText.textContent = target === "start" ? "Starting..." : "Stopping...";
+    el.power.classList.toggle("on", target === "start");
+    el.labelPrefix.textContent = "Please wait, ";
+    el.actionHint.textContent = target === "start" ? "starting the service..." : "stopping the service...";
+  }
+
+  function render(status) {
+    // While the toggle is in flight the service is in a transient state; keep
+    // the last settled values on screen instead of showing half-applied data.
+    if (toggling) return;
+
+    var running = status.state === "running";
+    var applied = status.applied === "yes";
+    var tun = status.tun || "";
+    var clients = (status.clients || "").replace(/,/g, ", ").replace(/,\s*$/, "");
+
+    el.pill.classList.remove("pending");
+    el.pill.classList.toggle("on", running);
+    el.pillText.textContent = running ? "Service running" : "Service stopped";
+    el.power.classList.toggle("on", running);
+    el.labelPrefix.textContent = "Tap to ";
+    el.actionHint.textContent = running ? "stop the service" : "start the service";
+    lastState = running ? "running" : "stopped";
+
+    el.tun.textContent = tun || "not detected";
+    el.tun.classList.toggle("ok", !!tun);
+    el.tun.classList.toggle("bad", !tun);
+
+    el.applied.textContent = applied ? "Applied" : (running ? "Waiting for VPN" : "Inactive");
+    el.applied.classList.toggle("ok", applied);
+    el.applied.classList.toggle("bad", !applied);
+
+    el.pid.textContent = status.pid || "-";
+    el.nat.textContent = status.nat === "1" ? "MASQUERADE" : "Off";
+    el.nat.classList.toggle("ok", status.nat === "1");
+
+    if (!running) {
+      el.clients.textContent = "-";
+    } else if (clients) {
+      el.clients.textContent = clients
+        .split(",")
+        .map(function (entry) { return entry.trim().replace(/\s+/, "\n"); })
+        .join("\n");
+    } else {
+      el.clients.textContent = "no clients";
+    }
+  }
+
+  function renderError(message) {
+    if (toggling) return;
+    el.pill.classList.remove("on", "pending");
+    el.pillText.textContent = "Unknown status";
+    el.actionHint.textContent = "start the service";
+    el.power.classList.remove("on");
+    el.labelPrefix.textContent = "Tap to ";
+    el.tun.textContent = "-";
+    el.applied.textContent = "-";
+    el.applied.classList.remove("ok", "bad");
+    el.pid.textContent = "-";
+    el.nat.textContent = "-";
+    el.nat.classList.remove("ok");
+    el.clients.textContent = "-";
+    if (message) toast(message);
+  }
+
+  function refresh(silent) {
+    // Every refresh gets a sequence number. A response that arrives after a
+    // newer refresh started (for example a poll that overlapped a toggle) is
+    // dropped so the UI never jumps back to pre-toggle values.
+    var seq = ++refreshSeq;
+    refreshing = true;
+    updateControls();
+    var p = (async function () {
+      try {
+        var res = await exec(serviceCmd("status"));
+        if (res.errno !== 0 && !res.stdout) {
+          throw new Error(res.stderr || "status failed");
+        }
+        if (seq !== refreshSeq) return;
+        render(parseStatus(res.stdout));
+        if (el.logBox.open) loadLog();
+      } catch (err) {
+        if (seq !== refreshSeq) return;
+        renderError(err && err.message ? err.message : "Failed to read status");
+      } finally {
+        if (seq === refreshSeq) {
+          refreshing = false;
+          updateControls();
+        }
+      }
+    })();
+    return p;
+  }
+
+  async function loadLog() {
+    if (!hasBridge()) return;
+    try {
+      var res = await exec("tail -n 40 " + shQuote(LOG_FILE) + " 2>/dev/null");
+      var text = (res.stdout || "").replace(/\u0000/g, "").trim();
+      el.log.textContent = text || "No log yet.";
+    } catch (e) { /* ignore */ }
+  }
+
+  async function toggle() {
+    if (toggling) return;
+
+    var target = lastState === "running" ? "stop" : "start";
+    toggling = true;
+    setPending(target);
+    updateControls();
+
+    var ok = false;
+    try {
+      var res = await exec(serviceCmd(target));
+      var out = (res.stdout || "").trim();
+      if (res.errno !== 0) {
+        throw new Error((res.stderr || out || "command failed").trim());
+      }
+      ok = true;
+      toast(out || (target === "start" ? "Service started" : "Service stopped"));
+    } catch (err) {
+      toast(err && err.message ? err.message : "Failed to change service state");
+    } finally {
+      // Remember the intended direction so an immediate tap after unlocking
+      // sends the opposite command, even before the status refresh lands.
+      if (ok) lastState = target === "start" ? "running" : "stopped";
+      toggling = false;
+      updateControls();
+      refresh(true);
+      if (el.logBox.open) loadLog();
+    }
+  }
+
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(function () {
+      if (!document.hidden && !toggling) refresh(true);
+    }, 5000);
+  }
+
+  el.power.addEventListener("click", function () { if (!toggling) toggle(); });
+  el.refresh.addEventListener("click", function () { if (!toggling) refresh(false); });
+  el.logBox.addEventListener("toggle", function () { if (el.logBox.open) loadLog(); });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refresh(true);
+  });
+
+  resolveModuleDir();
+  refresh(false);
+  startPolling();
+})();
+</script>
+</body>
+</html>

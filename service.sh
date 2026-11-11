@@ -23,6 +23,17 @@ CLIENT_IFACES="${CLIENT_IFACES:-}"
 VPN_TABLE="${VPN_TABLE:-5000}"
 RET_TABLE="${RET_TABLE:-5001}"
 
+STATE_FILE=${STATE_FILE:-/data/adb/vpn-gateway.state}
+PID_FILE=${PID_FILE:-/data/adb/vpn-gateway.pid}
+LOG_FILE=${LOG_FILE:-/data/adb/vpn-gateway.log}
+
+# Resolve our own path so "start"/"toggle" can relaunch this script detached.
+SELF=$0
+case "$SELF" in
+    */*) SELF="$(cd "${SELF%/*}" 2>/dev/null && pwd)/${SELF##*/}" ;;
+    *) if [ -f "$SELF" ]; then SELF="$(pwd)/$SELF"; else SELF=/data/adb/modules/vpn-gateway/service.sh; fi ;;
+esac
+
 FWD_CHAIN=VPNGW_FWD
 NAT_CHAIN=VPNGW_NAT
 DNS_CHAIN=VPNGW_DNS
@@ -39,7 +50,7 @@ IP6T=/system/bin/ip6tables
 ALL_ROUTES=
 
 log() {
-    echo "vpn-gateway: $*"
+    echo "vpn-gateway: $(date '+%H:%M:%S') $*"
     [ -x /system/bin/log ] && /system/bin/log -t vpn-gateway "$*" 2>/dev/null
     return 0
 }
@@ -296,48 +307,246 @@ EOF
     return 0
 }
 
-refresh_routes
-cleanup_ip_forward_stub
-cleanup_legacy
-cleanup_all
-echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+write_state() {
+    printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null
+}
 
-last_sig=
+read_state() {
+    [ -r "$STATE_FILE" ] || return 1
+    tr -d ' \t\r\n' < "$STATE_FILE" 2>/dev/null
+}
 
-while :; do
-    refresh_routes
+# List PIDs of the long running "service.sh run" process. The command line is
+# matched on purpose so "start"/"stop"/"toggle" processes never match. The
+# plain "service.sh" form catches instances started by older versions.
+service_pids() {
+    ps -eo pid,args 2>/dev/null | while read -r pid args; do
+        case "$args" in
+            *service.sh*" run"|*service.sh) echo "$pid" ;;
+        esac
+    done
+}
 
-    tun=$(detect_tun)
-    if [ -n "$tun" ]; then
-        clients=$(list_clients)
-        sig="$tun|$clients"
+is_running() {
+    local pid cmd
+    pid=$(head -n 1 "$PID_FILE" 2>/dev/null)
+    case "$pid" in
+        ''|*[!0-9]*) pid= ;;
+    esac
+    if [ -n "$pid" ] && [ -r "/proc/$pid/cmdline" ]; then
+        cmd=$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+        case "$cmd" in
+            *service.sh*) echo "$pid"; return 0 ;;
+        esac
+    fi
+
+    pid=$(service_pids | head -n 1)
+    [ -n "$pid" ] || return 1
+    echo "$pid"
+    return 0
+}
+
+start_service() {
+    local pid i
+    if pid=$(is_running); then
+        write_state on
+        echo "already running (pid $pid)"
+        return 0
+    fi
+
+    write_state on
+    rm -f "$PID_FILE"
+    : > "$LOG_FILE" 2>/dev/null
+
+    if command -v setsid >/dev/null 2>&1; then
+        setsid sh "$SELF" run >> "$LOG_FILE" 2>&1 < /dev/null &
     else
-        clients=
-        sig="none"
+        nohup sh "$SELF" run >> "$LOG_FILE" 2>&1 < /dev/null &
     fi
 
-    need_apply=0
-    if [ "$sig" != "$last_sig" ]; then
-        need_apply=1
-    elif [ -n "$tun" ] && ! healthy; then
-        need_apply=1
-    fi
-
-    if [ "$need_apply" = "1" ]; then
-        if [ -n "$tun" ]; then
-            if apply "$tun" "$clients"; then
-                log "active tun=$tun nat=$NAT clients=[$clients]"
-            else
-                log "setup failed (tun=$tun), cleaning up"
-                cleanup_all
+    # Return as soon as the worker is alive and its rules are installed.
+    i=0
+    while [ "$i" -lt 12 ]; do
+        if pid=$(is_running); then
+            if healthy; then
+                echo "started (pid $pid)"
+                return 0
             fi
-        else
-            cleanup_all
-            log "waiting for a VPN tun interface"
         fi
-        last_sig=$sig
+        sleep 0.25 2>/dev/null || sleep 1
+        i=$((i + 1))
+    done
+
+    if pid=$(is_running); then
+        echo "started (pid $pid)"
+        return 0
     fi
 
-    [ -n "$tun" ] && echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
-    sleep 5
-done
+    write_state off
+    echo "failed to start (see $LOG_FILE)"
+    return 1
+}
+
+stop_service() {
+    local pid pids alive i
+
+    write_state off
+
+    pids=$(service_pids)
+    if [ -z "$pids" ]; then
+        cleanup_all
+        rm -f "$PID_FILE"
+        echo "already stopped"
+        return 0
+    fi
+
+    for pid in $pids; do
+        kill "$pid" 2>/dev/null
+    done
+
+    # Wait for the processes we signalled; do not rescan every round.
+    i=0
+    while [ "$i" -lt 40 ]; do
+        alive=
+        for pid in $pids; do
+            [ -d "/proc/$pid" ] && alive="$alive $pid"
+        done
+        [ -z "$alive" ] && break
+        sleep 0.2 2>/dev/null || sleep 1
+        i=$((i + 1))
+    done
+
+    for pid in $alive; do
+        kill -9 "$pid" 2>/dev/null
+    done
+
+    cleanup_all
+    rm -f "$PID_FILE"
+    printf '%s vpn-gateway: stopped\n' "$(date '+%H:%M:%S')" >> "$LOG_FILE" 2>/dev/null
+    echo "stopped"
+    return 0
+}
+
+status_service() {
+    local pid tun clients n
+
+    if pid=$(is_running); then
+        echo "state=running"
+        echo "pid=$pid"
+    else
+        echo "state=stopped"
+        echo "pid="
+    fi
+
+    refresh_routes
+    tun=$(detect_tun)
+    clients=$(list_clients)
+    n=$(printf '%s\n' "$clients" | grep -c . 2>/dev/null)
+
+    echo "tun=${tun}"
+    echo "clients=$(printf '%s' "$clients" | tr '\n' ',')"
+    echo "client_count=${n:-0}"
+    echo "applied=$(if [ -n "$tun" ] && healthy; then echo yes; else echo no; fi)"
+    if "$IPT" -t nat -C POSTROUTING -j "$NAT_CHAIN" >/dev/null 2>&1; then
+        echo "nat=1"
+    else
+        echo "nat=0"
+    fi
+    echo "dns_redirect=$DNS_REDIRECT"
+    echo "dns_server=$DNS_SERVER"
+    echo "state_file=$(read_state)"
+}
+
+run_loop() {
+    local tun clients sig last_sig need_apply
+
+    echo $$ > "$PID_FILE"
+    write_state on
+    trap 'cleanup_all; rm -f "$PID_FILE"; exit 0' TERM INT HUP
+
+    refresh_routes
+    cleanup_ip_forward_stub
+    cleanup_legacy
+    cleanup_all
+    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+
+    log "started (pid $$)"
+
+    last_sig=
+    while :; do
+        refresh_routes
+
+        tun=$(detect_tun)
+        if [ -n "$tun" ]; then
+            clients=$(list_clients)
+            sig="$tun|$clients"
+        else
+            clients=
+            sig="none"
+        fi
+
+        need_apply=0
+        if [ "$sig" != "$last_sig" ]; then
+            need_apply=1
+        elif [ -n "$tun" ] && ! healthy; then
+            need_apply=1
+        fi
+
+        if [ "$need_apply" = "1" ]; then
+            if [ -n "$tun" ]; then
+                if apply "$tun" "$clients"; then
+                    log "active tun=$tun nat=$NAT clients=[$clients]"
+                else
+                    log "setup failed (tun=$tun), cleaning up"
+                    cleanup_all
+                fi
+            else
+                cleanup_all
+                log "waiting for a VPN tun interface"
+            fi
+            last_sig=$sig
+        fi
+
+        [ -n "$tun" ] && echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
+        sleep 5
+    done
+}
+
+case "${1:-}" in
+    run)
+        run_loop
+        ;;
+    start)
+        start_service
+        ;;
+    stop)
+        stop_service
+        ;;
+    restart)
+        stop_service > /dev/null
+        sleep 1
+        start_service
+        ;;
+    toggle)
+        if is_running > /dev/null; then
+            stop_service
+        else
+            start_service
+        fi
+        ;;
+    status)
+        status_service
+        ;;
+    "")
+        # Boot invocation. Respect a user requested "off" state.
+        if [ "$(read_state)" = "off" ]; then
+            log "disabled by user, not starting"
+            exit 0
+        fi
+        exec sh "$SELF" run >> "$LOG_FILE" 2>&1
+        ;;
+    *)
+        echo "usage: $0 [run|start|stop|restart|toggle|status]" >&2
+        exit 2
+        ;;
+esac
