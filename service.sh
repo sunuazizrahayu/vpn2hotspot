@@ -321,50 +321,55 @@ read_state() {
     tr -d ' \t\r\n' < "$STATE_FILE" 2>/dev/null
 }
 
-# Compact "tun0, 2 clients" text for the module description.
-short_extra() {
-    local tun="$1" n="$2" extra=
-    [ -n "$tun" ] && extra="$tun"
-    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
-        if [ "$n" = "1" ]; then
-            extra="${extra:+$extra, }1 client"
-        else
-            extra="${extra:+$extra, }$n clients"
-        fi
-    fi
-    printf '%s' "$extra"
-}
-
-# Keep "<id> | Status: ON (...)" / "OFF" in module.prop so the module card in
-# the root manager shows the live state without opening the WebUI.
+# Show the service state in the module description with a single icon:
+#   🔵  service is running
+#   🔴  service is stopped
+# module.prop is replaced atomically, so a reader (or a concurrent update) can
+# never see a partially written file and lose id/name/version/author.
 update_description() {
-    local mode="$1" extra="$2" base current desc tmp
+    local mode="$1" base current desc stripped tmp
     [ -r "$MODULE_PROP" ] || return 0
 
-    base=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
-    # Strip any previous suffix. sed is used instead of ${base%% | Status:*}
-    # because some device shells mishandle a literal "|" in the pattern.
-    base=$(printf '%s\n' "$base" | sed 's/ | Status:.*$//')
+    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
+    base=$(printf '%s\n' "$current" | sed 's/ | Status:.*$//')
+
+    # Drop every leading state icon. One icon is normal, but looping also
+    # repairs old descriptions that accumulated more than one.
+    while :; do
+        stripped=$(printf '%s\n' "$base" |
+            sed -e 's/^🔵 *//' -e 's/^🔴 *//' -e 's/^✅ *//' \
+                -e 's/^🟢 *//' -e 's/^● *//' -e 's/^○ *//')
+        [ "$stripped" = "$base" ] && break
+        base=$stripped
+    done
     [ -n "$base" ] || base="Allow all LAN traffic routing to VPN."
 
     if [ "$mode" = "on" ]; then
-        desc="$base | Status: ON"
-        [ -n "$extra" ] && desc="$desc ($extra)"
+        desc="🔵 $base"
     else
-        desc="$base | Status: OFF"
+        desc="🔴 $base"
     fi
 
-    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
     [ "$current" = "$desc" ] && return 0
 
-    # Rewrite via a temp file, then copy over the original so its owner, mode
-    # and inode stay intact while the manager may be reading it.
     tmp="${MODULE_PROP}.tmp.$$"
     {
         grep -v '^description=' "$MODULE_PROP" 2>/dev/null
         printf 'description=%s\n' "$desc"
-    } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-    cat "$tmp" > "$MODULE_PROP" 2>/dev/null && rm -f "$tmp"
+    } > "$tmp" 2>/dev/null
+
+    # Refuse to swap in an incomplete copy.
+    if [ ! -s "$tmp" ] ||
+        ! grep -q '^id=' "$tmp" 2>/dev/null ||
+        ! grep -q '^name=' "$tmp" 2>/dev/null ||
+        ! grep -q '^version=' "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    chmod 644 "$tmp" 2>/dev/null
+    chown 0:0 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$MODULE_PROP" 2>/dev/null || rm -f "$tmp"
     return 0
 }
 
@@ -510,20 +515,14 @@ status_service() {
     echo "dns_redirect=$DNS_REDIRECT"
     echo "dns_server=$DNS_SERVER"
     echo "state_file=$(read_state)"
-
-    if [ -n "$pid" ]; then
-        update_description on "$(short_extra "$tun" "${n:-0}")"
-    else
-        update_description off
-    fi
 }
 
 run_loop() {
-    local tun clients sig last_sig need_apply n
+    local tun clients sig last_sig need_apply
 
     echo $$ > "$PID_FILE"
     write_state on
-    update_description on "waiting for VPN"
+    update_description on
     trap 'cleanup_all; rm -f "$PID_FILE"; update_description off; exit 0' TERM INT HUP
 
     refresh_routes
@@ -541,11 +540,9 @@ run_loop() {
         tun=$(detect_tun)
         if [ -n "$tun" ]; then
             clients=$(list_clients)
-            n=$(printf '%s\n' "$clients" | grep -c . 2>/dev/null)
             sig="$tun|$clients"
         else
             clients=
-            n=0
             sig="none"
         fi
 
@@ -560,16 +557,16 @@ run_loop() {
             if [ -n "$tun" ]; then
                 if apply "$tun" "$clients"; then
                     log "active tun=$tun nat=$NAT clients=[$clients]"
-                    update_description on "$(short_extra "$tun" "$n")"
+                    update_description on
                 else
                     log "setup failed (tun=$tun), cleaning up"
                     cleanup_all
-                    update_description on "waiting for VPN"
+                    update_description on
                 fi
             else
                 cleanup_all
                 log "waiting for a VPN tun interface"
-                update_description on "waiting for VPN"
+                update_description on
             fi
             last_sig=$sig
         fi
