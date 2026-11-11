@@ -34,6 +34,11 @@ case "$SELF" in
     *) if [ -f "$SELF" ]; then SELF="$(pwd)/$SELF"; else SELF=/data/adb/modules/vpn-gateway/service.sh; fi ;;
 esac
 
+# The module description is rewritten with a live status suffix so the manager
+# (KernelSU, Magisk, APatch, ...) shows whether the service is on or off.
+MODULE_PROP=${MODULE_PROP:-${SELF%/*}/module.prop}
+[ -f "$MODULE_PROP" ] || MODULE_PROP=/data/adb/modules/vpn-gateway/module.prop
+
 FWD_CHAIN=VPNGW_FWD
 NAT_CHAIN=VPNGW_NAT
 DNS_CHAIN=VPNGW_DNS
@@ -316,6 +321,53 @@ read_state() {
     tr -d ' \t\r\n' < "$STATE_FILE" 2>/dev/null
 }
 
+# Compact "tun0, 2 clients" text for the module description.
+short_extra() {
+    local tun="$1" n="$2" extra=
+    [ -n "$tun" ] && extra="$tun"
+    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "$n" = "1" ]; then
+            extra="${extra:+$extra, }1 client"
+        else
+            extra="${extra:+$extra, }$n clients"
+        fi
+    fi
+    printf '%s' "$extra"
+}
+
+# Keep "<id> | Status: ON (...)" / "OFF" in module.prop so the module card in
+# the root manager shows the live state without opening the WebUI.
+update_description() {
+    local mode="$1" extra="$2" base current desc tmp
+    [ -r "$MODULE_PROP" ] || return 0
+
+    base=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
+    # Strip any previous suffix. sed is used instead of ${base%% | Status:*}
+    # because some device shells mishandle a literal "|" in the pattern.
+    base=$(printf '%s\n' "$base" | sed 's/ | Status:.*$//')
+    [ -n "$base" ] || base="Allow all LAN traffic routing to VPN."
+
+    if [ "$mode" = "on" ]; then
+        desc="$base | Status: ON"
+        [ -n "$extra" ] && desc="$desc ($extra)"
+    else
+        desc="$base | Status: OFF"
+    fi
+
+    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
+    [ "$current" = "$desc" ] && return 0
+
+    # Rewrite via a temp file, then copy over the original so its owner, mode
+    # and inode stay intact while the manager may be reading it.
+    tmp="${MODULE_PROP}.tmp.$$"
+    {
+        grep -v '^description=' "$MODULE_PROP" 2>/dev/null
+        printf 'description=%s\n' "$desc"
+    } > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    cat "$tmp" > "$MODULE_PROP" 2>/dev/null && rm -f "$tmp"
+    return 0
+}
+
 # List PIDs of the long running "service.sh run" process. The command line is
 # matched on purpose so "start"/"stop"/"toggle" processes never match. The
 # plain "service.sh" form catches instances started by older versions.
@@ -350,6 +402,7 @@ start_service() {
     local pid i
     if pid=$(is_running); then
         write_state on
+        update_description on
         echo "already running (pid $pid)"
         return 0
     fi
@@ -369,6 +422,7 @@ start_service() {
     while [ "$i" -lt 12 ]; do
         if pid=$(is_running); then
             if healthy; then
+                update_description on
                 echo "started (pid $pid)"
                 return 0
             fi
@@ -378,11 +432,13 @@ start_service() {
     done
 
     if pid=$(is_running); then
+        update_description on
         echo "started (pid $pid)"
         return 0
     fi
 
     write_state off
+    update_description off
     echo "failed to start (see $LOG_FILE)"
     return 1
 }
@@ -396,6 +452,7 @@ stop_service() {
     if [ -z "$pids" ]; then
         cleanup_all
         rm -f "$PID_FILE"
+        update_description off
         echo "already stopped"
         return 0
     fi
@@ -423,6 +480,7 @@ stop_service() {
     cleanup_all
     rm -f "$PID_FILE"
     printf '%s vpn-gateway: stopped\n' "$(date '+%H:%M:%S')" >> "$LOG_FILE" 2>/dev/null
+    update_description off
     echo "stopped"
     return 0
 }
@@ -455,14 +513,21 @@ status_service() {
     echo "dns_redirect=$DNS_REDIRECT"
     echo "dns_server=$DNS_SERVER"
     echo "state_file=$(read_state)"
+
+    if [ -n "$pid" ]; then
+        update_description on "$(short_extra "$tun" "${n:-0}")"
+    else
+        update_description off
+    fi
 }
 
 run_loop() {
-    local tun clients sig last_sig need_apply
+    local tun clients sig last_sig need_apply n
 
     echo $$ > "$PID_FILE"
     write_state on
-    trap 'cleanup_all; rm -f "$PID_FILE"; exit 0' TERM INT HUP
+    update_description on "waiting for VPN"
+    trap 'cleanup_all; rm -f "$PID_FILE"; update_description off; exit 0' TERM INT HUP
 
     refresh_routes
     cleanup_ip_forward_stub
@@ -479,9 +544,11 @@ run_loop() {
         tun=$(detect_tun)
         if [ -n "$tun" ]; then
             clients=$(list_clients)
+            n=$(printf '%s\n' "$clients" | grep -c . 2>/dev/null)
             sig="$tun|$clients"
         else
             clients=
+            n=0
             sig="none"
         fi
 
@@ -496,13 +563,16 @@ run_loop() {
             if [ -n "$tun" ]; then
                 if apply "$tun" "$clients"; then
                     log "active tun=$tun nat=$NAT clients=[$clients]"
+                    update_description on "$(short_extra "$tun" "$n")"
                 else
                     log "setup failed (tun=$tun), cleaning up"
                     cleanup_all
+                    update_description on "waiting for VPN"
                 fi
             else
                 cleanup_all
                 log "waiting for a VPN tun interface"
+                update_description on "waiting for VPN"
             fi
             last_sig=$sig
         fi
@@ -534,19 +604,27 @@ case "${1:-}" in
             start_service
         fi
         ;;
+    state)
+        if is_running > /dev/null; then
+            echo running
+        else
+            echo stopped
+        fi
+        ;;
     status)
         status_service
         ;;
     "")
         # Boot invocation. Respect a user requested "off" state.
         if [ "$(read_state)" = "off" ]; then
+            update_description off
             log "disabled by user, not starting"
             exit 0
         fi
         exec sh "$SELF" run >> "$LOG_FILE" 2>&1
         ;;
     *)
-        echo "usage: $0 [run|start|stop|restart|toggle|status]" >&2
+        echo "usage: $0 [run|start|stop|restart|toggle|state|status]" >&2
         exit 2
         ;;
 esac
