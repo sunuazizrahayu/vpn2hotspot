@@ -3,5 +3,5 @@ name=VPN2Hotspot
 version=1.0.0
 versionCode=1
 author=sunuazizrahayu
-updateJson=https://github.com/sunuazizrahayu/vpn-gateway/releases/latest/download/update.json
+updateJson=https://github.com/sunuazizrahayu/vpn2hotspot/releases/latest/download/update.json
 description=▶️ Not started yet. Tap Action or open WebUI to start.
