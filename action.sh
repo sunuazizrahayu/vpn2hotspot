@@ -36,7 +36,7 @@ echo
 
 if [ "$rc" -ne 0 ]; then
     echo "Failed to $action the service."
-    echo "Log: /data/adb/vpn2hotspot.log"
+    echo "Log: /data/adb/vpn2hotspot/service.log"
     exit "$rc"
 fi
 

@@ -31,7 +31,7 @@ Other commands: `run`, `restart`, `toggle`, `state`.
 
 ## Configuration
 
-Optional. Create `/data/adb/vpn2hotspot.conf`; common keys:
+Optional. Create `/data/adb/vpn2hotspot/config.conf`; common keys:
 
 | Key | Default | Description |
 |---|---|---|
@@ -46,7 +46,7 @@ Optional. Create `/data/adb/vpn2hotspot.conf`; common keys:
 Stop the service, remove the module, then optionally:
 
 ```sh
-su -c 'rm -f /data/adb/vpn2hotspot.*'
+su -c 'rm -rf /data/adb/vpn2hotspot'
 ```
 
 ## Build

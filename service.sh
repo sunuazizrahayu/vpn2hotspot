@@ -3,7 +3,7 @@
 # VPN2Hotspot
 # Route hotspot / USB tethering clients through a VpnService tun interface.
 #
-# Optional config: /data/adb/vpn2hotspot.conf
+# Optional config: /data/adb/vpn2hotspot/config.conf
 #   TUN_NAME=auto          # auto | tun0 | wg0 ...
 #   NAT=1                  # 1 = MASQUERADE client traffic to the tunnel address
 #   DNS_REDIRECT=1         # 1 = redirect client UDP/53 to DNS_SERVER
@@ -12,7 +12,14 @@
 #   VPN_TABLE=5000
 #   RET_TABLE=5001
 
-CONF=/data/adb/vpn2hotspot.conf
+DATA_DIR=${DATA_DIR:-/data/adb/vpn2hotspot}
+
+# Runtime files live in their own directory, separate from the module payload
+# so module updates can replace /data/adb/modules/vpn2hotspot safely.
+mkdir -p "$DATA_DIR" 2>/dev/null
+chmod 700 "$DATA_DIR" 2>/dev/null
+
+CONF=${CONF:-$DATA_DIR/config.conf}
 [ -f "$CONF" ] && . "$CONF"
 
 TUN_NAME="${TUN_NAME:-auto}"
@@ -23,9 +30,9 @@ CLIENT_IFACES="${CLIENT_IFACES:-}"
 VPN_TABLE="${VPN_TABLE:-5000}"
 RET_TABLE="${RET_TABLE:-5001}"
 
-STATE_FILE=${STATE_FILE:-/data/adb/vpn2hotspot.state}
-PID_FILE=${PID_FILE:-/data/adb/vpn2hotspot.pid}
-LOG_FILE=${LOG_FILE:-/data/adb/vpn2hotspot.log}
+STATE_FILE=${STATE_FILE:-$DATA_DIR/state}
+PID_FILE=${PID_FILE:-$DATA_DIR/pid}
+LOG_FILE=${LOG_FILE:-$DATA_DIR/service.log}
 
 # Resolve our own path so "start"/"toggle" can relaunch this script detached.
 SELF=$0
