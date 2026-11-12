@@ -277,6 +277,7 @@
   var refreshSeq = 0;
   var lastState = null;
   var lastApplied = null;
+  var lastStatus = null;
   var pollTimer = null;
   var callbackSeq = 0;
 
@@ -452,6 +453,7 @@
   }
 
   function render(status) {
+    lastStatus = status;
     // While the toggle is in flight the service is in a transient state; keep
     // the last settled values on screen instead of showing half-applied data.
     if (toggling) return;
@@ -513,13 +515,39 @@
     if (message) toast(message);
   }
 
+  function renderOptimistic(target, output) {
+    var status = {}, key;
+    if (lastStatus) {
+      for (key in lastStatus) {
+        if (Object.prototype.hasOwnProperty.call(lastStatus, key)) status[key] = lastStatus[key];
+      }
+    }
+
+    status.state = target === "start" ? "running" : "stopped";
+    status.applied = "no";
+    status.nat = "0";
+    status.clients = "";
+    status.client_count = "0";
+    if (target === "start") {
+      var m = /pid\s+(\d+)/.exec(output || "");
+      status.pid = m ? m[1] : "";
+    } else {
+      status.pid = "";
+    }
+    render(status);
+  }
+
   function refresh(silent) {
     // Every refresh gets a sequence number. A response that arrives after a
     // newer refresh started (for example a poll that overlapped a toggle) is
     // dropped so the UI never jumps back to pre-toggle values.
     var seq = ++refreshSeq;
-    refreshing = true;
-    updateControls();
+    // Background refreshes must not disable the refresh button; only an
+    // explicit tap shows the busy state.
+    if (!silent) {
+      refreshing = true;
+      updateControls();
+    }
     var p = (async function () {
       try {
         var res = await exec(serviceCmd("status"));
@@ -575,6 +603,9 @@
       // sends the opposite command, even before the status refresh lands.
       if (ok) lastState = target === "start" ? "running" : "stopped";
       toggling = false;
+      // Flip the pill right away; waiting for the status round-trip added
+      // roughly a second to every toggle even though the command succeeded.
+      if (ok) renderOptimistic(target, out);
       updateControls();
       var settled = refresh(true);
       // Start returns as soon as the worker is alive. Poll a few times until the
