@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read and check the module version
+        id: version
+        run: |
+          version=$(sed -n 's/^version=//p' module.prop)
+          code=$(sed -n 's/^versionCode=//p' module.prop)
+          tag=${GITHUB_REF_NAME}
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+          if [ "$version" != "$tag" ]; then
+            echo "::error::module.prop says $version but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Build the module
+        run: make build
+
+      - name: Create update.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CODE: ${{ steps.version.outputs.code }}
+        run: |
+          printf '{\n  "version": "%s",\n  "versionCode": %s,\n  "zipUrl": "%s/releases/latest/download/vpn2hotspot.zip",\n  "changelog": "%s/releases/latest/download/changelog.md"\n}\n' \
+            "$VERSION" "$CODE" \
+            "https://github.com/$GITHUB_REPOSITORY" \
+            "https://github.com/$GITHUB_REPOSITORY" > update.json
+          cat update.json
+
+      - name: Create the changelog
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF^" 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            git log --format='- %s' "$prev..$GITHUB_REF" > changelog.md
+          else
+            git log --format='- %s' > changelog.md
+          fi
+          cat changelog.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: VPN2Hotspot ${{ steps.version.outputs.version }}
+          files: |
+            vpn2hotspot.zip
+            update.json
+            changelog.md

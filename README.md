@@ -13,6 +13,8 @@ own.
 The service starts at boot unless you stopped it. A WebUI needs a manager that
 supports module web pages (for example KernelSU).
 
+Updates are published as GitHub releases and show up in your root manager.
+
 ## Usage
 
 The module card shows the state: `✔️` running, `❌` stopped, `▶️` not started.
