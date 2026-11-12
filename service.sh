@@ -1,9 +1,9 @@
 #!/system/bin/sh
 
-# VPN Gateway
+# VPN2Hotspot
 # Route hotspot / USB tethering clients through a VpnService tun interface.
 #
-# Optional config: /data/adb/vpn-gateway.conf
+# Optional config: /data/adb/vpn2hotspot.conf
 #   TUN_NAME=auto          # auto | tun0 | wg0 ...
 #   NAT=1                  # 1 = MASQUERADE client traffic to the tunnel address
 #   DNS_REDIRECT=1         # 1 = redirect client UDP/53 to DNS_SERVER
@@ -12,7 +12,7 @@
 #   VPN_TABLE=5000
 #   RET_TABLE=5001
 
-CONF=/data/adb/vpn-gateway.conf
+CONF=/data/adb/vpn2hotspot.conf
 [ -f "$CONF" ] && . "$CONF"
 
 TUN_NAME="${TUN_NAME:-auto}"
@@ -23,22 +23,22 @@ CLIENT_IFACES="${CLIENT_IFACES:-}"
 VPN_TABLE="${VPN_TABLE:-5000}"
 RET_TABLE="${RET_TABLE:-5001}"
 
-STATE_FILE=${STATE_FILE:-/data/adb/vpn-gateway.state}
-PID_FILE=${PID_FILE:-/data/adb/vpn-gateway.pid}
-LOG_FILE=${LOG_FILE:-/data/adb/vpn-gateway.log}
+STATE_FILE=${STATE_FILE:-/data/adb/vpn2hotspot.state}
+PID_FILE=${PID_FILE:-/data/adb/vpn2hotspot.pid}
+LOG_FILE=${LOG_FILE:-/data/adb/vpn2hotspot.log}
 
 # Resolve our own path so "start"/"toggle" can relaunch this script detached.
 SELF=$0
 case "$SELF" in
     */*) SELF="$(cd "${SELF%/*}" 2>/dev/null && pwd)/${SELF##*/}" ;;
-    *) if [ -f "$SELF" ]; then SELF="$(pwd)/$SELF"; else SELF=/data/adb/modules/vpn-gateway/service.sh; fi ;;
+    *) if [ -f "$SELF" ]; then SELF="$(pwd)/$SELF"; else SELF=/data/adb/modules/vpn2hotspot/service.sh; fi ;;
 esac
 
 # The module description is rewritten with a live status suffix so the manager
 # (KernelSU, Magisk, APatch, ...) shows whether the service is on or off.
 MODULE_PROP=${MODULE_PROP:-${SELF%/*}/module.prop}
-[ -f "$MODULE_PROP" ] || MODULE_PROP=/data/adb/modules/vpn-gateway/module.prop
-BASE_DESC="Allow all LAN traffic routing to VPN."
+[ -f "$MODULE_PROP" ] || MODULE_PROP=/data/adb/modules/vpn2hotspot/module.prop
+BASE_DESC="Share your VPN connection with your tethered devices."
 
 FWD_CHAIN=VPNGW_FWD
 NAT_CHAIN=VPNGW_NAT
@@ -56,8 +56,8 @@ IP6T=/system/bin/ip6tables
 ALL_ROUTES=
 
 log() {
-    echo "vpn-gateway: $(date '+%H:%M:%S') $*"
-    [ -x /system/bin/log ] && /system/bin/log -t vpn-gateway "$*" 2>/dev/null
+    echo "vpn2hotspot: $(date '+%H:%M:%S') $*"
+    [ -x /system/bin/log ] && /system/bin/log -t vpn2hotspot "$*" 2>/dev/null
     return 0
 }
 
@@ -167,7 +167,7 @@ del_jump() {
 }
 
 cleanup_legacy() {
-    # Remove rules created by vpn-gateway <= 1.1 in the built-in chains.
+    # Remove rules created by the old vpn-gateway module (<= 1.1).
     local t c
     for t in tun0 tun1 tun2 tun3 wg0; do
         "$IPT" -D FORWARD -i "$t" -j ACCEPT 2>/dev/null
@@ -471,7 +471,7 @@ stop_service() {
 
     cleanup_all
     rm -f "$PID_FILE"
-    printf '%s vpn-gateway: stopped\n' "$(date '+%H:%M:%S')" >> "$LOG_FILE" 2>/dev/null
+    printf '%s vpn2hotspot: stopped\n' "$(date '+%H:%M:%S')" >> "$LOG_FILE" 2>/dev/null
     update_description off
     echo "stopped"
     return 0
@@ -508,12 +508,15 @@ status_service() {
 }
 
 run_loop() {
-    local tun clients sig last_sig need_apply
+    local tun clients sig last_sig need_apply sleep_pid
 
     echo $$ > "$PID_FILE"
     write_state on
     update_description on
-    trap 'cleanup_all; rm -f "$PID_FILE"; update_description off; exit 0' TERM INT HUP
+    # A plain "sleep 5" delays the TERM trap until sleep exits, so stopping
+    # could take up to five seconds. Waiting on a background sleep lets the
+    # signal be handled immediately.
+    trap 'cleanup_all; rm -f "$PID_FILE"; [ -n "$sleep_pid" ] && kill "$sleep_pid" 2>/dev/null; update_description off; exit 0' TERM INT HUP
 
     refresh_routes
     cleanup_ip_forward_stub
@@ -562,7 +565,9 @@ run_loop() {
         fi
 
         [ -n "$tun" ] && echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
-        sleep 5
+        sleep 5 &
+        sleep_pid=$!
+        wait "$sleep_pid"
     done
 }
 

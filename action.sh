@@ -1,7 +1,7 @@
 #!/system/bin/sh
 
 # Action button handler for Magisk / KernelSU / APatch.
-# Toggles the VPN Gateway service without disabling the module or rebooting.
+# Toggles the VPN2Hotspot service without disabling the module or rebooting.
 #
 # The manager streams stdout line by line, so print the direction first: that
 # way the Action screen never sits blank while the service starts or stops.
@@ -10,12 +10,12 @@ DIR=${0%/*}
 case "$DIR" in
     "$0"|"") DIR=$(pwd) ;;
 esac
-[ -f "$DIR/service.sh" ] || DIR=/data/adb/modules/vpn-gateway
+[ -f "$DIR/service.sh" ] || DIR=/data/adb/modules/vpn2hotspot
 
 SERVICE="$DIR/service.sh"
 
-echo "VPN Gateway"
-echo "Allow all LAN traffic routing to VPN."
+echo "VPN2Hotspot"
+echo "Share your VPN connection with your tethered devices."
 echo
 
 # Decide the direction before the slow work so something is on screen at once.
@@ -36,7 +36,7 @@ echo
 
 if [ "$rc" -ne 0 ]; then
     echo "Failed to $action the service."
-    echo "Log: /data/adb/vpn-gateway.log"
+    echo "Log: /data/adb/vpn2hotspot.log"
     exit "$rc"
 fi
 

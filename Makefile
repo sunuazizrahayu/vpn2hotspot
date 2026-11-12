@@ -1,10 +1,10 @@
 .PHONY: build
 
-build: vpn-gateway.zip
+build: vpn2hotspot.zip
 
-vpn-gateway.zip: META-INF module.prop service.sh action.sh $(wildcard webroot/*)
-	rm -rf vpn-gateway.zip
-	zip -r vpn-gateway.zip META-INF module.prop service.sh action.sh webroot
+vpn2hotspot.zip: META-INF module.prop service.sh action.sh $(wildcard webroot/*)
+	rm -rf vpn2hotspot.zip
+	zip -r vpn2hotspot.zip META-INF module.prop service.sh action.sh webroot
 
 clean:
-	rm -rf vpn-gateway.zip
+	rm -rf vpn2hotspot.zip
