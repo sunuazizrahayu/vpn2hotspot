@@ -231,11 +231,18 @@ ensure_chain() {
 }
 
 healthy() {
-    "$IP" rule show 2>/dev/null | grep -q "lookup $VPN_TABLE" || return 1
+    local tun="$1" clients="$2"
+
+    [ -n "$tun" ] || return 1
     "$IP" route show table "$VPN_TABLE" 2>/dev/null | grep -q '^default' || return 1
+    "$IP" rule show 2>/dev/null | grep -q "iif $tun lookup $RET_TABLE" || return 1
     "$IPT" -C FORWARD -j "$FWD_CHAIN" >/dev/null 2>&1 || return 1
     if [ "$NAT" = "1" ]; then
         "$IPT" -t nat -C POSTROUTING -j "$NAT_CHAIN" >/dev/null 2>&1 || return 1
+    fi
+    # Client rules only exist while a client interface is detected.
+    if [ -n "$clients" ]; then
+        "$IP" rule show 2>/dev/null | grep -q "lookup $VPN_TABLE" || return 1
     fi
     return 0
 }
@@ -503,7 +510,7 @@ status_service() {
     echo "tun=${tun}"
     echo "clients=$(printf '%s' "$clients" | tr '\n' ',')"
     echo "client_count=${n:-0}"
-    echo "applied=$(if [ -n "$tun" ] && healthy; then echo yes; else echo no; fi)"
+    echo "applied=$(if [ -n "$tun" ] && healthy "$tun" "$clients"; then echo yes; else echo no; fi)"
     if "$IPT" -t nat -C POSTROUTING -j "$NAT_CHAIN" >/dev/null 2>&1; then
         echo "nat=1"
     else
@@ -549,7 +556,7 @@ run_loop() {
         need_apply=0
         if [ "$sig" != "$last_sig" ]; then
             need_apply=1
-        elif [ -n "$tun" ] && ! healthy; then
+        elif [ -n "$tun" ] && ! healthy "$tun" "$clients"; then
             need_apply=1
         fi
 
