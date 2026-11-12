@@ -61,7 +61,7 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          name: VPN2Hotspot ${{ steps.version.outputs.version }}
+          name: ${{ github.ref_name }}
           files: |
             vpn2hotspot.zip
             update.json
