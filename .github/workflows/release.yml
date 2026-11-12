@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "[0-9]*"
+      - "v[0-9]*"
 
 permissions:
   contents: write
@@ -22,7 +23,8 @@ jobs:
         run: |
           version=$(sed -n 's/^version=//p' module.prop)
           code=$(sed -n 's/^versionCode=//p' module.prop)
-          tag=${GITHUB_REF_NAME}
+          # Tags may carry a "v" prefix (v1.0.0); module.prop stays numeric.
+          tag=${GITHUB_REF_NAME#v}
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "code=$code" >> "$GITHUB_OUTPUT"
