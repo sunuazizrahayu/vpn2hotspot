@@ -28,7 +28,11 @@ else
     echo "Starting the service, please wait..."
 fi
 
-output=$(sh "$SERVICE" "$action" 2>&1)
+if [ "$action" = "start" ]; then
+    output=$(sh "$SERVICE" start wait 2>&1)
+else
+    output=$(sh "$SERVICE" "$action" 2>&1)
+fi
 rc=$?
 
 echo "$output"

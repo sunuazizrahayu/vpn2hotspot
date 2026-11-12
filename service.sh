@@ -33,6 +33,7 @@ RET_TABLE="${RET_TABLE:-5001}"
 STATE_FILE=${STATE_FILE:-$DATA_DIR/state}
 PID_FILE=${PID_FILE:-$DATA_DIR/pid}
 LOG_FILE=${LOG_FILE:-$DATA_DIR/service.log}
+STOP_FLAG=${STOP_FLAG:-$DATA_DIR/stopping}
 
 # Resolve our own path so "start"/"toggle" can relaunch this script detached.
 SELF=$0
@@ -61,6 +62,8 @@ IP6T=/system/bin/ip6tables
 [ -x "$IP6T" ] || IP6T=ip6tables
 
 ALL_ROUTES=
+ALL_ADDRS=
+ALL_RULES=
 
 log() {
     echo "vpn2hotspot: $(date '+%H:%M:%S') $*"
@@ -79,38 +82,72 @@ read_table_index() {
 
 refresh_routes() {
     ALL_ROUTES=$("$IP" -o -4 route show table all 2>/dev/null)
+    ALL_ADDRS=$("$IP" -o -4 addr show 2>/dev/null)
+    ALL_RULES=$("$IP" rule show 2>/dev/null)
 }
 
+# The helpers below parse the snapshots taken by refresh_routes() instead of
+# spawning "ip", "sed", and "grep" once per interface. That keeps a status
+# refresh and a start check fast on devices with many interfaces.
+
 iface_addr() {
-    "$IP" -o -4 addr show dev "$1" 2>/dev/null |
-        sed -n 's/.* inet \([0-9.]*\/[0-9]*\).*/\1/p' | head -n 1
+    local idx name key addr rest
+
+    while read -r idx name key addr rest; do
+        [ "$name" = "$1" ] || continue
+        [ "$key" = "inet" ] || continue
+        echo "$addr"
+        return 0
+    done <<EOF
+$ALL_ADDRS
+EOF
+    return 1
 }
 
 iface_network() {
-    local iface="$1" addr prefix net
-    addr=$(iface_addr "$iface")
-    [ -n "$addr" ] || return 1
+    local iface="$1" line net
+
+    iface_addr "$iface" >/dev/null || return 1
 
     # Prefer the connected route installed by netd, works for any prefix length.
-    net=$(printf '%s\n' "$ALL_ROUTES" |
-        sed -n "s/^\([0-9.]*\/[0-9]*\) dev $iface .*/\1/p" | head -n 1)
-    if [ -n "$net" ]; then
-        echo "$net"
-        return 0
-    fi
+    while IFS= read -r line; do
+        case "$line" in
+            *" dev $iface "*|*" dev $iface") ;;
+            *) continue ;;
+        esac
+        net=${line%% *}
+        case "$net" in
+            */*) echo "$net"; return 0 ;;
+        esac
+    done <<EOF
+$ALL_ROUTES
+EOF
 
     # Fallback: assume the usual /24 used by Android tethering.
-    prefix=${addr#*/}
-    addr=${addr%/*}
+    net=$(iface_addr "$iface")
+    case "$net" in
+        */*) ;;
+        *) return 1 ;;
+    esac
+    local addr=${net%/*} prefix=${net#*/}
     if [ "$prefix" = "24" ]; then
         echo "${addr%.*}.0/24"
     else
-        echo "$addr/$prefix"
+        echo "$net"
     fi
 }
 
 is_uplink() {
-    printf '%s\n' "$ALL_ROUTES" | grep -q "default .* dev $1 " 2>/dev/null
+    local line
+
+    while IFS= read -r line; do
+        case "$line" in
+            "default "*" dev $1 "*|"default "*" dev $1") return 0 ;;
+        esac
+    done <<EOF
+$ALL_ROUTES
+EOF
+    return 1
 }
 
 detect_tun() {
@@ -168,14 +205,27 @@ cleanup_ip_forward_stub() {
 
 del_jump() {
     local cmd="$1" table="$2" parent="$3" chain="$4"
+
+    # Only remove the jump. The chain itself is left in place: once it is
+    # unreferenced it is harmless, and the next apply reuses and flushes it.
+    # This avoids several slow iptables calls on every stop.
     while "$cmd" -t "$table" -D "$parent" -j "$chain" 2>/dev/null; do :; done
-    "$cmd" -t "$table" -F "$chain" 2>/dev/null
-    "$cmd" -t "$table" -X "$chain" 2>/dev/null
 }
 
 cleanup_legacy() {
     # Remove rules created by the old vpn-gateway module (<= 1.1).
-    local t c
+    # Deleting them costs dozens of iptables calls, so first check whether any
+    # are actually installed. Our own rules live in custom chains and do not
+    # match these patterns.
+    local t c need=
+
+    "$IPT" -S FORWARD 2>/dev/null | grep -qE ' (-i|-o) (tun[0-9]+|wg0) ' && need=1
+    "$IPT" -t nat -S PREROUTING 2>/dev/null | grep -q 'DNAT' && need=1
+    if [ -x "$IP6T" ]; then
+        "$IP6T" -S FORWARD 2>/dev/null | grep -q 'icmp6-no-route' && need=1
+    fi
+    [ -n "$need" ] || return 0
+
     for t in tun0 tun1 tun2 tun3 wg0; do
         "$IPT" -D FORWARD -i "$t" -j ACCEPT 2>/dev/null
         for c in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
@@ -223,6 +273,18 @@ cleanup_all() {
     "$IP" route flush table "$RET_TABLE" 2>/dev/null
 }
 
+# Cheap check used before cleanup: skip the expensive chain teardown when
+# nothing from this module is installed.
+rules_present() {
+    "$IPT" -C FORWARD -j "$FWD_CHAIN" >/dev/null 2>&1 && return 0
+    "$IPT" -t mangle -C FORWARD -j "$MSS_CHAIN" >/dev/null 2>&1 && return 0
+    "$IPT" -t nat -C POSTROUTING -j "$NAT_CHAIN" >/dev/null 2>&1 && return 0
+    "$IPT" -t nat -C PREROUTING -j "$DNS_CHAIN" >/dev/null 2>&1 && return 0
+    "$IP" rule show 2>/dev/null | grep -q "lookup $RET_TABLE" && return 0
+    "$IP" route show table "$VPN_TABLE" 2>/dev/null | grep -q . && return 0
+    return 1
+}
+
 ensure_chain() {
     local cmd="$1" table="$2" chain="$3"
     "$cmd" -t "$table" -n -L "$chain" >/dev/null 2>&1 ||
@@ -234,15 +296,28 @@ healthy() {
     local tun="$1" clients="$2"
 
     [ -n "$tun" ] || return 1
-    "$IP" route show table "$VPN_TABLE" 2>/dev/null | grep -q '^default' || return 1
-    "$IP" rule show 2>/dev/null | grep -q "iif $tun lookup $RET_TABLE" || return 1
+
+    # Both the routes and the rules come from refresh_routes(), so a check does
+    # not spawn "ip" again.
+    case "$ALL_ROUTES" in
+        *"default "*" dev $tun table $VPN_TABLE "*|*"default "*" dev $tun table $VPN_TABLE") ;;
+        *) return 1 ;;
+    esac
+    case "$ALL_RULES" in
+        *"iif $tun lookup $RET_TABLE"*) ;;
+        *) return 1 ;;
+    esac
+
     "$IPT" -C FORWARD -j "$FWD_CHAIN" >/dev/null 2>&1 || return 1
     if [ "$NAT" = "1" ]; then
         "$IPT" -t nat -C POSTROUTING -j "$NAT_CHAIN" >/dev/null 2>&1 || return 1
     fi
     # Client rules only exist while a client interface is detected.
     if [ -n "$clients" ]; then
-        "$IP" rule show 2>/dev/null | grep -q "lookup $VPN_TABLE" || return 1
+        case "$ALL_RULES" in
+            *"lookup $VPN_TABLE"*) ;;
+            *) return 1 ;;
+        esac
     fi
     return 0
 }
@@ -250,7 +325,7 @@ healthy() {
 apply() {
     local tun="$1" clients="$2" iface cidr pref
 
-    cleanup_all
+    rules_present && cleanup_all
 
     echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
 
@@ -344,7 +419,7 @@ read_state() {
 # module.prop is replaced atomically, so a reader (or a concurrent update) can
 # never see a partially written file and lose id/name/version/author.
 update_description() {
-    local mode="$1" current desc tmp
+    local mode="$1" current= desc tmp line has_id= has_name= has_version=
     [ -r "$MODULE_PROP" ] || return 0
 
     if [ "$mode" = "on" ]; then
@@ -353,20 +428,34 @@ update_description() {
         desc="❌ $BASE_DESC"
     fi
 
-    current=$(sed -n 's/^description=//p' "$MODULE_PROP" 2>/dev/null | head -n 1)
+    # Read the current value with the shell instead of sed/head; this runs on
+    # every start and stop, so the saved process spawns add up.
+    while IFS= read -r line; do
+        case "$line" in
+            description=*) current=${line#description=} ;;
+        esac
+    done < "$MODULE_PROP"
     [ "$current" = "$desc" ] && return 0
 
     tmp="${MODULE_PROP}.tmp.$$"
-    {
-        grep -v '^description=' "$MODULE_PROP" 2>/dev/null
-        printf 'description=%s\n' "$desc"
-    } > "$tmp" 2>/dev/null
+    : > "$tmp" 2>/dev/null || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            description=*) continue ;;
+        esac
+        printf '%s\n' "$line"
+    done < "$MODULE_PROP" > "$tmp" 2>/dev/null
+    printf 'description=%s\n' "$desc" >> "$tmp" 2>/dev/null
 
     # Refuse to swap in an incomplete copy.
-    if [ ! -s "$tmp" ] ||
-        ! grep -q '^id=' "$tmp" 2>/dev/null ||
-        ! grep -q '^name=' "$tmp" 2>/dev/null ||
-        ! grep -q '^version=' "$tmp" 2>/dev/null; then
+    while IFS= read -r line; do
+        case "$line" in
+            id=*) has_id=1 ;;
+            name=*) has_name=1 ;;
+            version=*) has_version=1 ;;
+        esac
+    done < "$tmp"
+    if [ ! -s "$tmp" ] || [ -z "$has_id" ] || [ -z "$has_name" ] || [ -z "$has_version" ]; then
         rm -f "$tmp"
         return 0
     fi
@@ -408,7 +497,9 @@ is_running() {
 }
 
 start_service() {
-    local pid i
+    local pid i tun wait_for_rules=
+
+    [ "$1" = "wait" ] && wait_for_rules=1
     if pid=$(is_running); then
         write_state on
         echo "already running (pid $pid)"
@@ -416,7 +507,7 @@ start_service() {
     fi
 
     write_state on
-    rm -f "$PID_FILE"
+    rm -f "$PID_FILE" "$STOP_FLAG"
     : > "$LOG_FILE" 2>/dev/null
 
     if command -v setsid >/dev/null 2>&1; then
@@ -425,16 +516,24 @@ start_service() {
         nohup sh "$SELF" run >> "$LOG_FILE" 2>&1 < /dev/null &
     fi
 
-    # Return as soon as the worker is alive and its rules are installed.
+    # The toggle UI only needs to know that the worker is alive, so return at
+    # the first PID sighting. "start wait" (used by the Action screen) stays
+    # until the rules are installed so its summary is accurate.
     i=0
-    while [ "$i" -lt 12 ]; do
+    while [ "$i" -lt 40 ]; do
         if pid=$(is_running); then
-            if healthy; then
+            if [ -z "$wait_for_rules" ]; then
+                echo "started (pid $pid)"
+                return 0
+            fi
+            refresh_routes
+            tun=$(detect_tun)
+            if [ -z "$tun" ] || healthy "$tun" "$(list_clients)"; then
                 echo "started (pid $pid)"
                 return 0
             fi
         fi
-        sleep 0.25 2>/dev/null || sleep 1
+        sleep 0.15 2>/dev/null || sleep 1
         i=$((i + 1))
     done
 
@@ -454,20 +553,30 @@ stop_service() {
 
     write_state off
 
-    pids=$(service_pids)
+    # The PID file is authoritative and avoids a full process scan; fall back
+    # to scanning only when it is missing or stale.
+    if pid=$(is_running); then
+        pids=$pid
+    else
+        pids=$(service_pids)
+    fi
+
     if [ -z "$pids" ]; then
-        cleanup_all
-        rm -f "$PID_FILE"
+        rules_present && cleanup_all
+        rm -f "$PID_FILE" "$STOP_FLAG"
         update_description off
         echo "already stopped"
         return 0
     fi
 
+    # Let the worker exit immediately; this process does the teardown below.
+    : > "$STOP_FLAG" 2>/dev/null
     for pid in $pids; do
         kill "$pid" 2>/dev/null
     done
 
-    # Wait for the processes we signalled; do not rescan every round.
+    # Keep the wait short; the worker exits as soon as it sees STOP_FLAG and
+    # the rules are removed by this process below.
     i=0
     while [ "$i" -lt 40 ]; do
         alive=
@@ -475,7 +584,7 @@ stop_service() {
             [ -d "/proc/$pid" ] && alive="$alive $pid"
         done
         [ -z "$alive" ] && break
-        sleep 0.2 2>/dev/null || sleep 1
+        sleep 0.1 2>/dev/null || sleep 1
         i=$((i + 1))
     done
 
@@ -483,7 +592,8 @@ stop_service() {
         kill -9 "$pid" 2>/dev/null
     done
 
-    cleanup_all
+    rm -f "$STOP_FLAG"
+    rules_present && cleanup_all
     rm -f "$PID_FILE"
     printf '%s vpn2hotspot: stopped\n' "$(date '+%H:%M:%S')" >> "$LOG_FILE" 2>/dev/null
     update_description off
@@ -524,18 +634,22 @@ status_service() {
 run_loop() {
     local tun clients sig last_sig need_apply sleep_pid
 
+    rm -f "$STOP_FLAG"
     echo $$ > "$PID_FILE"
     write_state on
     update_description on
     # A plain "sleep 5" delays the TERM trap until sleep exits, so stopping
     # could take up to five seconds. Waiting on a background sleep lets the
     # signal be handled immediately.
-    trap 'cleanup_all; rm -f "$PID_FILE"; [ -n "$sleep_pid" ] && kill "$sleep_pid" 2>/dev/null; update_description off; exit 0' TERM INT HUP
+    #
+    # During a normal stop, stop_service raises STOP_FLAG and performs the
+    # cleanup itself after this process exits. That keeps the teardown in one
+    # place and makes stopping much faster. If the worker is signalled by
+    # anything else, the trap still cleans up before exiting.
+    trap '[ -n "$sleep_pid" ] && kill "$sleep_pid" 2>/dev/null; if [ -f "$STOP_FLAG" ]; then rm -f "$PID_FILE"; exit 0; fi; rules_present && cleanup_all; rm -f "$PID_FILE"; update_description off; exit 0' TERM INT HUP
 
-    refresh_routes
     cleanup_ip_forward_stub
     cleanup_legacy
-    cleanup_all
     echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null
 
     log "started (pid $$)"
@@ -571,7 +685,7 @@ run_loop() {
                     update_description on
                 fi
             else
-                cleanup_all
+                rules_present && cleanup_all
                 log "waiting for a VPN tun interface"
                 update_description on
             fi
@@ -590,7 +704,7 @@ case "${1:-}" in
         run_loop
         ;;
     start)
-        start_service
+        start_service "$2"
         ;;
     stop)
         stop_service

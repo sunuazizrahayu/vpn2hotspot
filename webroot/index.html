@@ -276,6 +276,7 @@
   var refreshing = false;
   var refreshSeq = 0;
   var lastState = null;
+  var lastApplied = null;
   var pollTimer = null;
   var callbackSeq = 0;
 
@@ -472,9 +473,11 @@
     el.tun.classList.toggle("ok", !!tun);
     el.tun.classList.toggle("bad", !tun);
 
-    el.applied.textContent = applied ? "Applied" : (running ? "Waiting for VPN" : "Inactive");
+    el.applied.textContent = applied ? "Applied" :
+      (running ? (tun ? "Applying..." : "Waiting for VPN") : "Inactive");
     el.applied.classList.toggle("ok", applied);
-    el.applied.classList.toggle("bad", !applied);
+    el.applied.classList.toggle("bad", !applied && !(running && tun));
+    lastApplied = applied;
 
     el.pid.textContent = status.pid || "-";
     el.nat.textContent = status.nat === "1" ? "MASQUERADE" : "Off";
@@ -494,6 +497,7 @@
 
   function renderError(message) {
     if (toggling) return;
+    lastApplied = null;
     el.pill.classList.remove("on", "pending");
     el.pillText.textContent = "Unknown status";
     el.actionHint.textContent = "start the service";
@@ -572,7 +576,25 @@
       if (ok) lastState = target === "start" ? "running" : "stopped";
       toggling = false;
       updateControls();
-      refresh(true);
+      var settled = refresh(true);
+      // Start returns as soon as the worker is alive. Poll a few times until the
+      // routing rules are installed so the panel shows "Applied" promptly
+      // instead of waiting for the next five second poll.
+      if (ok && target === "start") {
+        settled.then(function () {
+          if (toggling || lastState !== "running" || lastApplied === true) return;
+          var checks = 0;
+          var pollApplied = function () {
+            if (toggling || checks >= 6 || lastApplied === true) return;
+            checks++;
+            setTimeout(function () {
+              if (toggling || lastApplied === true || lastState !== "running") return;
+              refresh(true).then(pollApplied);
+            }, 500);
+          };
+          pollApplied();
+        });
+      }
       if (el.logBox.open) loadLog();
     }
   }
